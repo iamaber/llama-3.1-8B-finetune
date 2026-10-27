@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# Model weights and merged checkpoints
+outputs/
+llama-3.1-8b-bangla-empathic-lora/
+llama-3.1-8b-bangla-empathic-merged/
+*.safetensors
+*.bin
+*.pt
+*.pth
+
+# Generated run artifacts
+wandb/
+generated_responses_*.csv
+human_evaluation_samples.csv
