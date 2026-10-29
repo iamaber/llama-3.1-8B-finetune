@@ -15,7 +15,7 @@ A parameter-efficient fine-tuning project using LoRA and Unsloth to create an em
 
 This project fine-tunes Meta's Llama 3.1 8B Instruct model on a Bengali empathetic conversations corpus. The goal is to create a model that can respond empathetically to user queries in Bengali, maintaining cultural and linguistic nuances.
 
-**Dataset**: Bengali empathetic conversation corpus (Questions & Answers)  
+**Dataset**: Bengali empathetic conversation corpus (Questions & Answers). Source, version, and license are not recorded in this repository; see [NOTICE.md](./NOTICE.md).  
 **Base Model**: unsloth/Meta-Llama-3.1-8B-Instruct  
 **Training Technique**: LoRA (Low-Rank Adaptation) with Unsloth optimization  
 **Hardware**: 2x Tesla T4 GPUs (15.8GB each)  
@@ -406,12 +406,8 @@ for question in questions:
 
 ## Dependencies
 
+Install the pinned environment recorded for the training run:
+
 ```bash
-pip install unsloth
-pip install transformers
-pip install trl
-pip install datasets
-pip install evaluate
-pip install wandb
-pip install pandas scikit-learn torch
+pip install -r requirements.txt
 ```
