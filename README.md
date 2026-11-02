@@ -411,3 +411,7 @@ Install the pinned environment recorded for the training run:
 ```bash
 pip install -r requirements.txt
 ```
+
+## License and Notices
+
+The base model and any LoRA adapter or merged weights produced by this project are governed by the Llama 3.1 Community License (Copyright © Meta Platforms, Inc.). Dataset terms are set by the corpus publisher. See [NOTICE.md](./NOTICE.md) for the required attribution and notices.
