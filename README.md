@@ -64,7 +64,7 @@ target_modules = [
 2. **30% Less VRAM**: Custom gradient checkpointing implementation
 3. **2x Larger Batch Sizes**: Memory efficiency enables larger effective batch sizes
 4. **Drop-in Replacement**: Compatible with HuggingFace transformers
-5. **Multi-GPU Support**: Seamless distributed training with `device_map="balanced"`
+5. **2-GPU Model Sharding**: Loads the model across both T4s with `device_map="balanced"` (model parallelism, not data-parallel DDP)
 
 ### Model Loading Configuration
 
@@ -72,7 +72,7 @@ target_modules = [
 max_seq_length = 2020      # Maximum context length
 dtype = None               # Auto-detect (FP16 for T4, BF16 for Ampere+)
 load_in_4bit = False       # Full precision for quality (can enable for memory)
-device_map = "auto"        # Auto-distribute model across GPUs (fixed from "balanced")
+device_map = "balanced"    # Shard the model across the two T4 GPUs (value used in the run)
 ```
 
 **Why max_seq_length=2020?**
@@ -85,7 +85,7 @@ device_map = "auto"        # Auto-distribute model across GPUs (fixed from "bala
 - 4-bit quantization recommended for inference to reduce memory usage
 - Can be enabled for single GPU deployment
 
-**Device Map Update**: Changed from `"balanced"` to `"auto"` to fix device allocation errors during training.
+**Device Map**: The logged run used `device_map="balanced"`, which shards model layers across both GPUs. Unsloth reports `Data Parallel GPUs = 1`, so this is model parallelism rather than DDP; the effective batch of 16 is the total, not per GPU.
 
 ## Training Strategy
 
@@ -128,11 +128,11 @@ This structured format helps the model distinguish roles and maintain conversati
 
 ```python
 per_device_train_batch_size = 2
-gradient_accumulation_steps = 8     # Updated from 4 to 8
-effective_batch_size = 16          # 2 * 8 = 16 per GPU
+gradient_accumulation_steps = 8
+effective_batch_size = 16          # 2 * 8 = 16 total across the two sharded GPUs
 
 learning_rate = 2e-4               # Standard for instruction fine-tuning
-num_train_epochs = 0.5             # Half epoch (~950 steps)
+max_steps = 1000                   # Fixed optimizer steps; matches the logged run length
 warmup_steps = 100
 weight_decay = 0.01
 lr_scheduler_type = "cosine"
@@ -143,7 +143,8 @@ optimizer = "adamw_8bit"           # Memory-efficient optimizer
 **Batch Size Strategy:**
 - Small per-device batch size (2) prevents OOM on 15.8GB GPUs
 - Gradient accumulation (8) simulates larger batches for stable training
-- Effective batch size of 16 (2 × 8) provides stable gradient estimates
+- Effective batch size of 16 total (2 per device × 8 accumulation) provides stable gradient estimates
+- The model is sharded across the two T4s (model parallelism), not data-parallel replicated
 - Follows best practices: batch_size=2 (VRAM driver), accumulation=8 (time driver)
 
 **Learning Rate (2e-4):**
@@ -152,16 +153,16 @@ optimizer = "adamw_8bit"           # Memory-efficient optimizer
 - Works well with 8-bit optimizer
 - Higher than full fine-tuning (5e-5) due to fewer trainable parameters
 
-**0.5 Epochs (~950 steps):**
-- Changed from max_steps=100 which only covered 13% of one epoch
-- Half epoch provides sufficient training without overfitting
-- Training stopped at 950 steps based on validation performance
-- Significantly more than initial 100 steps, allowing proper learning
+**1000 Steps (~0.52 epoch):**
+- The code fixes `max_steps=1000`, the number of optimizer steps the logged run actually reached
+- With an effective batch of 16, one pass over the 30,568-sample training split is ~1,911 steps, so 1,000 steps is ~0.52 epoch
+- `load_best_model_at_end` keeps the best checkpoint by eval loss; the best logged eval loss is 0.5519 at step 950
+- Training was not stopped early: no early-stopping callback is configured, and the last logged step is 1,000
 
 **Warmup Steps (100):**
 - Gradual learning rate increase prevents early training instability
 - Especially important when starting from instruction-tuned model
-- Represents ~0.9% of total training steps
+- Represents ~10% of the 1,000 total training steps
 
 **Cosine Learning Rate Schedule:**
 - Smooth decay from peak to near-zero
@@ -221,34 +222,33 @@ Unsloth's custom implementation trades computation for memory:
 
 **Impact**: More stable gradient estimates and smoother convergence.
 
-### 2. Loss Plateau at 0.6
+### 2. Loss Plateau at ~0.6
 
-**Problem**: Training loss stuck at ~0.6 after 100 steps, showing no improvement.
+**Problem**: Training loss fell from 1.67 to ~0.63 within the first ~80 steps, then stayed in the 0.58-0.63 range for the rest of the run.
 
-**Root Cause**: 
-- Only training for 100 steps (13% of one epoch)
-- Stopped training right when real learning was about to begin
-- Loss plateaus at 0.6 are common in steps 50-200
+**Observation**:
+- Most of the loss reduction happens before step 100 (train loss 0.629 at step 100)
+- Extending training to 1,000 steps lowered train loss to 0.579 (step 1000); the best eval loss was 0.5519 at step 950
+- After ~step 100 the curve is flat and further steps give only marginal improvement
 
-**Solution**:
-- Switched from `max_steps=100` to `num_train_epochs=0.5` (~950 steps)
-- Kept learning rate at 2e-4 (standard for LoRA fine-tuning)
-- Allowed model to train significantly longer (9.5x more steps)
+**Decision**:
+- Ran a fixed `max_steps=1000` instead of a short 100-step run
+- Kept the learning rate at 2e-4 (standard for LoRA fine-tuning)
 
-**Impact**: Successfully broke through plateau; model properly learned the task with sufficient training steps.
+**Impact**: The longer run produced a stable, well-checkpointed model, but the plateau was not sharply "broken" at a later step; most learning had already occurred by ~step 100.
 
-**Lesson**: Early stopping during initial plateau phase prevents actual learning. Full epoch training is essential.
+**Lesson**: In this run the curve converges early. Report step-wise gains honestly instead of attributing a late breakthrough.
 
 ### 3. Memory Management with Large Model
 
 **Problem**: 8B parameter model with long sequences (2020 tokens) pushes memory limits on 2x T4 GPUs.
 
 **Solutions Implemented**:
-- Multi-GPU training with auto device mapping
+- Model sharding across 2 GPUs with `device_map="balanced"` (model parallelism, not DDP)
 - Gradient checkpointing with Unsloth optimization
 - Small per-device batch size (2) with gradient accumulation (8)
 - 8-bit optimizer (AdamW-8bit) reduces optimizer state memory
-- Conservative learning rate (5e-5) for stable training
+- Learning rate 2e-4, matching the logged training config
 
 **Inference Limitation**: 
 - Memory constraints prevent full inference on test set during training session
@@ -261,22 +261,20 @@ Unsloth's custom implementation trades computation for memory:
 
 ### Training Status
 
-✅ **Training Completed Successfully**
-- Model trained for 0.5 epochs (~950 steps)
-- LoRA adapters saved to `llama-3.1-8b-bangla-empathic-lora`
-- Merged 16-bit model saved to `llama-3.1-8b-bangla-empathic-merged`
+✅ **Training Completed**
+- Trained for 1,000 optimizer steps (`max_steps=1000`; ~0.52 epoch of the 30,568-sample training split)
+- LoRA adapter and merged 16-bit model were written to Kaggle working directories, not committed to this repository
 - Training logs available in Weights & Biases (run: `llama-3.1-8b-finetuning-v1`)
 
 ### Training Metrics
 
-**Loss Progression:**
+**Loss Progression** (from the W&B export in `reports/CSV`):
 - **Initial Training Loss** (Step 1): 1.67
 - **Initial Eval Loss** (Step 10): 1.56
-- **Plateau Phase** (Steps 80-300): Loss stabilized around 0.62-0.63
-- **Breakthrough** (Step ~300): Loss began consistent descent
-- **Final Training Loss** (Step 950): 0.567
-- **Final Eval Loss** (Step 950): 0.552
-- **Best Eval Loss**: 0.552 at step 950
+- **Converged by ~Step 100**: training loss 0.629, eval loss 0.625
+- **Later gains were marginal**: training loss 0.586 at step 300, 0.567 at step 950
+- **Last Logged Step** (Step 1000): training loss 0.579, eval loss 0.565
+- **Best Eval Loss**: 0.5519 at step 950
 
 **Gradient Norm Stability:**
 - Initial gradient norm: 1.39
@@ -285,34 +283,34 @@ Unsloth's custom implementation trades computation for memory:
 
 **Learning Rate Schedule:**
 - Warmup phase (Steps 0-100): Linear increase from 0 to 2e-4
-- Training phase (Steps 100-950): Cosine decay from 2e-4 to ~8e-7
+- Training phase (Steps 100-1000): Cosine decay from 2e-4 to ~6e-10 by step 1000
 - Successfully prevented early instability and allowed smooth convergence
 
 **Training Configuration**: 
-- **Total Steps**: 950 (0.5 epochs)
+- **Total Steps**: 1,000 (`max_steps=1000`)
 - **Batch size**: 2 per device
 - **Gradient accumulation**: 8 steps
-- **Effective batch size**: 16
+- **Effective batch size**: 16 total
 - **Peak learning rate**: 2e-4
 - **Warmup steps**: 100
 - **Optimizer**: AdamW 8-bit
 - **Scheduler**: Cosine
-- **Hardware**: 2x Tesla T4 GPUs with auto device mapping
+- **Hardware**: 2x Tesla T4 GPUs, model sharded with `device_map="balanced"`
 
 **Key Observations:**
-- Loss decreased by **66%** from initial 1.67 to final 0.567
-- Eval loss closely tracked training loss (no overfitting)
-- Breakthrough after step 300 confirmed need for extended training beyond initial 100 steps
+- Total training loss fell from 1.67 to 0.579 at step 1000 (~65%); most of the drop (1.67 → 0.635) happened in the first 80 steps
+- Eval loss closely tracked training loss (no overfitting); best eval loss 0.5519 at step 950
+- Gains after ~step 100 were marginal: training loss went from 0.629 at step 100 to 0.579 at step 1000
 - Stable gradient norms indicate proper hyperparameter tuning
 
 ### Evaluation Status
 
-⚠️ **Limited by Memory Constraints**
+⚠️ **Not run**
 
-Due to memory limitations during the training session:
-- Full evaluation on test set not completed in notebook
+The evaluation cells (BLEU, ROUGE, perplexity) are commented out in the notebook and were not executed for this run. Every quality statement above is based on training/eval loss only.
+- Full evaluation on the 3,821-row test split was not completed
+- To run it: install `rouge_score` (now in `requirements.txt` and the install cell), uncomment the evaluation cells, and record the output
 - Model successfully saved and can be evaluated offline
-- Evaluation framework implemented and tested on small samples
 
 **For full evaluation**, load the saved model with 4-bit quantization:
 ```python
@@ -324,10 +322,11 @@ fine_tuner = LLAMAFineTuner(
 
 ### Model Artifacts
 
-- **LoRA Adapters**: `llama-3.1-8b-bangla-empathic-lora/`
-- **Merged Model**: `llama-3.1-8b-bangla-empathic-merged/`
+The training run wrote these to Kaggle-ephemeral working directories. They are not included in this repository, and no Hugging Face Hub copy is linked, so the saved weights cannot be verified from the repo alone.
+- **LoRA Adapters**: `llama-3.1-8b-bangla-empathic-lora/` (Kaggle working directory)
+- **Merged Model**: `llama-3.1-8b-bangla-empathic-merged/` (Kaggle working directory)
 - **Training Logs**: Weights & Biases project `llama-bangla-empathic`
-- **Checkpoints**: Best 3 checkpoints saved in `outputs/`
+- **Checkpoints**: kept only inside the training session (`outputs/`)
 
 ## Usage
 
