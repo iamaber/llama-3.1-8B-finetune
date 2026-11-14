@@ -153,9 +153,9 @@ optimizer = "adamw_8bit"           # Memory-efficient optimizer
 - Works well with 8-bit optimizer
 - Higher than full fine-tuning (5e-5) due to fewer trainable parameters
 
-**1000 Steps (~0.52 epoch):**
+**1000 Steps:**
 - The code fixes `max_steps=1000`, the number of optimizer steps the logged run actually reached
-- With an effective batch of 16, one pass over the 30,568-sample training split is ~1,911 steps, so 1,000 steps is ~0.52 epoch
+- The committed run banner reports 956 steps for one epoch, but that banner conflicts with the nominal effective-batch calculation; this repository therefore does not claim a reliable epoch fraction
 - `load_best_model_at_end` keeps the best checkpoint by eval loss; the best logged eval loss is 0.5519 at step 950
 - Training was not stopped early: no early-stopping callback is configured, and the last logged step is 1,000
 
@@ -262,7 +262,7 @@ Unsloth's custom implementation trades computation for memory:
 ### Training Status
 
 ✅ **Training Completed**
-- Trained for 1,000 optimizer steps (`max_steps=1000`; ~0.52 epoch of the 30,568-sample training split)
+- Trained for 1,000 optimizer steps (`max_steps=1000`); the committed artifacts do not support a reliable epoch fraction
 - LoRA adapter and merged 16-bit model were written to Kaggle working directories, not committed to this repository
 - Training logs available in Weights & Biases (run: `llama-3.1-8b-finetuning-v1`)
 
@@ -309,7 +309,7 @@ Unsloth's custom implementation trades computation for memory:
 
 The evaluation cells (BLEU, ROUGE, perplexity) are commented out in the notebook and were not executed for this run. Every quality statement above is based on training/eval loss only.
 - Full evaluation on the 3,821-row test split was not completed
-- To run it: install `rouge_score` (now in `requirements.txt` and the install cell), uncomment the evaluation cells, and record the output
+- To run it: install the dependencies in `requirements.txt` (including `rouge_score` and `sacrebleu`), uncomment the evaluation cells, and record the output
 - Model successfully saved and can be evaluated offline
 
 **For full evaluation**, load the saved model with 4-bit quantization:
@@ -405,7 +405,7 @@ for question in questions:
 
 ## Dependencies
 
-Install the pinned environment recorded for the training run:
+Install the reproducibility environment assembled from the versions recorded by the run plus compatible pins for its remaining dependencies:
 
 ```bash
 pip install -r requirements.txt
